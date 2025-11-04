@@ -6,6 +6,17 @@ use rusqlite::{Connection, Statement};
 
 use org_roam_db::RoamFile;
 
+const ROAM_FILE_REF_STMT: &str = r#"
+        WITH source_file_node AS (SELECT nodes.id from nodes join files on nodes.file = files.file where files.file = ?1),
+             referenced_nodes AS (SELECT dest from links, source_file_node where links.source = source_file_node.id and links.type = '"id"')
+        SELECT nodes.file from nodes, referenced_nodes where nodes.id = referenced_nodes.dest;
+    "#;
+
+const ROAM_FILE_ASSET_STMT: &str = r#"
+        WITH source_file_node AS (SELECT nodes.id, nodes.file from nodes join files on nodes.file = files.file where files.file = ?1)
+        SELECT dest from links, source_file_node where links.source = source_file_node.id and links.type = '"file"'
+    "#;
+
 /// Find all file names of notes referenced by a given file in the org-roam database.
 ///
 /// # Arguments
@@ -64,17 +75,10 @@ pub fn find_file_references_recursive(
     paths: &[RoamFile],
     exclude: impl Fn(&RoamFile) -> bool,
 ) -> anyhow::Result<ReferencedFiles> {
-    let mut ref_stmt = conn.prepare(r#"
-        WITH source_file_node AS (SELECT nodes.id from nodes join files on nodes.file = files.file where files.file = ?1),
-             referenced_nodes AS (SELECT dest from links, source_file_node where links.source = source_file_node.id and links.type = '"id"')
-        SELECT nodes.file from nodes, referenced_nodes where nodes.id = referenced_nodes.dest;
-    "#).unwrap();
+    let mut ref_stmt = conn.prepare(ROAM_FILE_REF_STMT).unwrap();
     info!("Prepared statement for finding referenced files");
 
-    let mut asset_stmt = conn.prepare(r#"
-        WITH source_file_node AS (SELECT nodes.id, nodes.file from nodes join files on nodes.file = files.file where files.file = ?1)
-        SELECT dest from links, source_file_node where links.source = source_file_node.id and links.type = '"file"'
-    "#).unwrap();
+    let mut asset_stmt = conn.prepare(ROAM_FILE_ASSET_STMT).unwrap();
 
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
@@ -111,6 +115,15 @@ pub fn find_file_references_recursive(
 
     let assets = all_assets.into_iter().collect();
     Ok(ReferencedFiles { notes, assets })
+}
+
+pub fn find_file_references(conn: &Connection, path: &RoamFile) -> anyhow::Result<ReferencedFiles> {
+    let mut ref_stmt = conn.prepare(ROAM_FILE_REF_STMT).unwrap();
+    info!("Prepared statement for finding referenced files");
+
+    let mut asset_stmt = conn.prepare(ROAM_FILE_ASSET_STMT).unwrap();
+
+    find_files_referenced_by(&mut ref_stmt, &mut asset_stmt, path)
 }
 
 fn try_resolve_asset_path(note_file: &Path, asset: &Path) -> Option<PathBuf> {
